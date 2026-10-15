@@ -1,0 +1,194 @@
+name: FlakeHub build
+
+# Reusable workflow: build explicit flake installables on chosen runners, push
+# their closures to FlakeHub Cache, then optionally publish the flake (with
+# resolved output paths) once every build has succeeded.
+#
+# Use this when you need control over runners (self-hosted, big disks, private
+# inputs) or over exactly which outputs are built. For "build everything the
+# flake exposes on GitHub-hosted runners", use flakehub-ci.yml instead.
+#
+# The caller must grant OIDC:
+#   permissions:
+#     id-token: write
+#     contents: read
+
+on:
+  workflow_call:
+    inputs:
+      builds:
+        description: >-
+          JSON array of build jobs. Each entry is
+          {"name": "...", "runner": "ubuntu-latest" or ["self-hosted", "nix"],
+          "installable": ".#packages.x86_64-linux.default"}.
+        required: true
+        type: string
+      install-nix:
+        description: >-
+          Install Determinate Nix on build runners. Set false on self-hosted
+          runners that already have Nix (the cache action then logs in via OIDC
+          and a netrc instead of Determinate Nixd).
+        type: boolean
+        default: true
+      extra-nix-conf:
+        description: Extra nix.conf lines for build and publish jobs.
+        type: string
+        default: ""
+      enqueue-closures:
+        description: >-
+          Explicitly push each built installable's full closure. Needed on
+          long-lived runners, where paths already in the store are never
+          rebuilt and so never reach the post-build upload hook.
+        type: boolean
+        default: true
+      fail-fast:
+        type: boolean
+        default: false
+      enable-ssh-agent:
+        description: Load the ssh-private-key secret into an agent (private git+ssh inputs).
+        type: boolean
+        default: false
+      visibility:
+        description: >-
+          Publish to FlakeHub after all builds succeed: public, unlisted or
+          private. Empty (default) only populates the cache.
+        type: string
+        default: ""
+      directory:
+        description: Flake directory to publish, relative to the repository root.
+        type: string
+        default: "."
+      include-output-paths:
+        description: Publish resolved store paths (enables fh resolve / fh apply).
+        type: boolean
+        default: true
+      publish-runner:
+        description: JSON runs-on value for the publish job.
+        type: string
+        default: '"ubuntu-latest"'
+      publish-install-nix:
+        type: boolean
+        default: true
+      default-branch:
+        description: Branch that publishes rolling releases; tags publish tagged releases.
+        type: string
+        default: ${{ github.event.repository.default_branch }}
+    secrets:
+      ssh-private-key:
+        required: false
+      github-token:
+        description: Token with read access to private GitHub flake inputs.
+        required: false
+    outputs:
+      flake_name:
+        value: ${{ jobs.publish.outputs.flake_name }}
+      flake_version:
+        value: ${{ jobs.publish.outputs.flake_version }}
+      flakeref_exact:
+        value: ${{ jobs.publish.outputs.flakeref_exact }}
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: ${{ inputs.fail-fast }}
+      matrix:
+        include: ${{ fromJSON(inputs.builds) }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        if: ${{ inputs.install-nix }}
+        with:
+          extra-conf: ${{ inputs.extra-nix-conf }}
+
+      - name: Configure Nix for this job
+        env:
+          EXTRA_NIX_CONF: ${{ !inputs.install-nix && inputs.extra-nix-conf || '' }}
+          GITHUB_INPUT_TOKEN: ${{ secrets.github-token }}
+        run: |
+          conf="${NIX_CONFIG:-}"
+          [[ -n "$EXTRA_NIX_CONF" ]] && conf+=$'\n'"$EXTRA_NIX_CONF"
+          [[ -n "$GITHUB_INPUT_TOKEN" ]] && conf+=$'\n'"access-tokens = github.com=$GITHUB_INPUT_TOKEN"
+          if [[ -n "$conf" ]]; then
+            { echo 'NIX_CONFIG<<__NIX_CONFIG__'; printf '%s\n' "$conf"; echo '__NIX_CONFIG__'; } >> "$GITHUB_ENV"
+          fi
+
+      - uses: webfactory/ssh-agent@v0.10.0
+        if: ${{ inputs.enable-ssh-agent }}
+        with:
+          ssh-private-key: ${{ secrets.ssh-private-key }}
+
+      - uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - name: Build ${{ matrix.installable }}
+        env:
+          INSTALLABLE: ${{ matrix.installable }}
+        run: |
+          nix build -L --no-link --print-out-paths "$INSTALLABLE" | tee "$RUNNER_TEMP/out-paths"
+
+      - name: Push closure to FlakeHub Cache
+        if: ${{ inputs.enqueue-closures }}
+        run: |
+          command -v curl >/dev/null || { echo "::error::curl is required on the runner"; exit 1; }
+          # Store paths never need JSON escaping.
+          paths=$(sed '/^$/d; s/.*/"&"/' "$RUNNER_TEMP/out-paths" | paste -sd, -)
+          printf '{"store_paths":[%s]}' "$paths" \
+            | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- \
+                http://127.0.0.1:37515/api/enqueue-paths
+          echo
+          echo "Queued closure(s); the cache action's post step waits for the upload."
+
+  publish:
+    needs: build
+    if: >-
+      ${{ inputs.visibility != '' && !github.event.repository.fork &&
+      (github.ref == format('refs/heads/{0}', inputs.default-branch) || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: ${{ fromJSON(inputs.publish-runner) }}
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      flake_name: ${{ steps.push.outputs.flake_name }}
+      flake_version: ${{ steps.push.outputs.flake_version }}
+      flakeref_exact: ${{ steps.push.outputs.flakeref_exact }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/determinate-nix-action@v3
+        if: ${{ inputs.publish-install-nix }}
+        with:
+          extra-conf: ${{ inputs.extra-nix-conf }}
+
+      - name: Configure Nix for this job
+        env:
+          GITHUB_INPUT_TOKEN: ${{ secrets.github-token }}
+        run: |
+          if [[ -n "$GITHUB_INPUT_TOKEN" ]]; then
+            { echo 'NIX_CONFIG<<__NIX_CONFIG__'
+              printf '%s\n' "${NIX_CONFIG:-}" "access-tokens = github.com=$GITHUB_INPUT_TOKEN"
+              echo '__NIX_CONFIG__'; } >> "$GITHUB_ENV"
+          fi
+
+      - uses: webfactory/ssh-agent@v0.10.0
+        if: ${{ inputs.enable-ssh-agent }}
+        with:
+          ssh-private-key: ${{ secrets.ssh-private-key }}
+
+      - uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - uses: DeterminateSystems/flakehub-push@v7
+        id: push
+        with:
+          visibility: ${{ inputs.visibility }}
+          rolling: ${{ github.ref == format('refs/heads/{0}', inputs.default-branch) }}
+          include-output-paths: ${{ inputs.include-output-paths }}
+          directory: ${{ inputs.directory }}

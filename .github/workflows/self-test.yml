@@ -1,0 +1,51 @@
+name: self-test
+
+# End-to-end check of flakehub-build.yml: build a unique two-path closure on
+# x86_64-linux and aarch64-linux, push it, then on a fresh runner substitute it
+# with local builds disabled. Nothing is published to FlakeHub.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/flakehub-build.yml
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      builds: >-
+        [
+          {"name": "x86_64-linux", "runner": "ubuntu-latest",
+           "installable": "./test/selftest#packages.x86_64-linux.top"},
+          {"name": "aarch64-linux", "runner": "ubuntu-24.04-arm",
+           "installable": "./test/selftest#packages.aarch64-linux.top"}
+        ]
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: DeterminateSystems/flakehub-cache-action@v3
+      - name: Substitute the closure from FlakeHub Cache (no local builds)
+        run: |
+          out=$(nix build -L --no-link --print-out-paths --max-jobs 0 \
+            ./test/selftest#packages.x86_64-linux.top)
+          nix path-info -r "$out"
+          test "$(nix path-info -r "$out" | wc -l)" -eq 2
