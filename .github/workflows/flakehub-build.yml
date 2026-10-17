@@ -41,6 +41,12 @@ on:
           rebuilt and so never reach the post-build upload hook.
         type: boolean
         default: true
+      isolate-home:
+        description: >-
+          Use a per-job HOME. Recommended on long-lived self-hosted runners so
+          the cache action's nix.conf/netrc edits do not accumulate.
+        type: boolean
+        default: false
       fail-fast:
         type: boolean
         default: false
@@ -99,6 +105,12 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Use a per-job HOME
+        if: ${{ inputs.isolate-home }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/home"
+          echo "HOME=$RUNNER_TEMP/home" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -125,7 +137,19 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.ssh-private-key }}
 
+      # Self-hosted hosts often run many runners; the cache daemon's default
+      # ports would collide between concurrent jobs. Derive per-runner ports.
+      - name: Choose cache daemon ports
+        id: ports
+        run: |
+          h=$(printf '%s' "$RUNNER_NAME" | cksum | cut -d' ' -f1)
+          echo "listen=127.0.0.1:$((40000 + h % 10000))" >> "$GITHUB_OUTPUT"
+          echo "notify=$((50000 + h % 10000))" >> "$GITHUB_OUTPUT"
+
       - uses: DeterminateSystems/flakehub-cache-action@v3
+        with:
+          listen: ${{ steps.ports.outputs.listen }}
+          startup-notification-port: ${{ steps.ports.outputs.notify }}
 
       - name: Build ${{ matrix.installable }}
         env:
@@ -135,13 +159,15 @@ jobs:
 
       - name: Push closure to FlakeHub Cache
         if: ${{ inputs.enqueue-closures }}
+        env:
+          LISTEN: ${{ steps.ports.outputs.listen }}
         run: |
           command -v curl >/dev/null || { echo "::error::curl is required on the runner"; exit 1; }
           # Store paths never need JSON escaping.
           paths=$(sed '/^$/d; s/.*/"&"/' "$RUNNER_TEMP/out-paths" | paste -sd, -)
           printf '{"store_paths":[%s]}' "$paths" \
             | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- \
-                http://127.0.0.1:37515/api/enqueue-paths
+                "http://$LISTEN/api/enqueue-paths"
           echo
           echo "Queued closure(s); the cache action's post step waits for the upload."
 

@@ -70,6 +70,7 @@ jobs:
 | --- | --- | --- |
 | `builds` | required | JSON list of `{name, runner, installable}`; `runner` may be a label list for self-hosted runners. |
 | `install-nix` | `true` | Set `false` on self-hosted hosts that already run Nix. |
+| `isolate-home` | `false` | Per-job HOME; set on long-lived self-hosted runners so the cache action's nix.conf edits don't accumulate. Daemon ports are always derived per runner. |
 | `enqueue-closures` | `true` | Pushes each full closure explicitly. Long-lived runners never rebuild paths already in their store, so the post-build hook alone misses them. |
 | `visibility` | empty | `public`, `unlisted` or `private` publishes after all builds pass. Empty only populates the cache. |
 | `include-output-paths` | `true` | Publishes resolved store paths for `fh resolve` / `fh apply`. |
