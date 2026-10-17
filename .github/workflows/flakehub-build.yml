@@ -83,7 +83,7 @@ on:
       ssh-private-key:
         required: false
       github-token:
-        description: Token with read access to private GitHub flake inputs.
+        description: "Token with read access to private GitHub flake inputs (github: and git+ssh://git@github.com)."
         required: false
     outputs:
       flake_name:
@@ -133,7 +133,20 @@ jobs:
         run: |
           conf="${NIX_CONFIG:-}"
           [[ -n "$EXTRA_NIX_CONF" ]] && conf+=$'\n'"$EXTRA_NIX_CONF"
-          [[ -n "$GITHUB_INPUT_TOKEN" ]] && conf+=$'\n'"access-tokens = github.com=$GITHUB_INPUT_TOKEN"
+          if [[ -n "$GITHUB_INPUT_TOKEN" ]]; then
+            # github: inputs use access-tokens; git+ssh://git@github.com inputs
+            # are rewritten to HTTPS with a masked, process-environment header.
+            conf+=$'\n'"access-tokens = github.com=$GITHUB_INPUT_TOKEN"
+            auth=$(printf 'x-access-token:%s' "$GITHUB_INPUT_TOKEN" | base64 | tr -d '\r\n')
+            echo "::add-mask::$auth"
+            {
+              echo 'GIT_CONFIG_COUNT=2'
+              echo 'GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf'
+              echo 'GIT_CONFIG_VALUE_0=ssh://git@github.com/'
+              echo 'GIT_CONFIG_KEY_1=http.https://github.com/.extraHeader'
+              echo "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic $auth"
+            } >> "$GITHUB_ENV"
+          fi
           if [[ -n "$conf" ]]; then
             { echo 'NIX_CONFIG<<__NIX_CONFIG__'; printf '%s\n' "$conf"; echo '__NIX_CONFIG__'; } >> "$GITHUB_ENV"
           fi
@@ -204,10 +217,23 @@ jobs:
         env:
           GITHUB_INPUT_TOKEN: ${{ secrets.github-token }}
         run: |
+          conf="${NIX_CONFIG:-}"
           if [[ -n "$GITHUB_INPUT_TOKEN" ]]; then
-            { echo 'NIX_CONFIG<<__NIX_CONFIG__'
-              printf '%s\n' "${NIX_CONFIG:-}" "access-tokens = github.com=$GITHUB_INPUT_TOKEN"
-              echo '__NIX_CONFIG__'; } >> "$GITHUB_ENV"
+            # github: inputs use access-tokens; git+ssh://git@github.com inputs
+            # are rewritten to HTTPS with a masked, process-environment header.
+            conf+=$'\n'"access-tokens = github.com=$GITHUB_INPUT_TOKEN"
+            auth=$(printf 'x-access-token:%s' "$GITHUB_INPUT_TOKEN" | base64 | tr -d '\r\n')
+            echo "::add-mask::$auth"
+            {
+              echo 'GIT_CONFIG_COUNT=2'
+              echo 'GIT_CONFIG_KEY_0=url.https://github.com/.insteadOf'
+              echo 'GIT_CONFIG_VALUE_0=ssh://git@github.com/'
+              echo 'GIT_CONFIG_KEY_1=http.https://github.com/.extraHeader'
+              echo "GIT_CONFIG_VALUE_1=AUTHORIZATION: basic $auth"
+            } >> "$GITHUB_ENV"
+          fi
+          if [[ -n "$conf" ]]; then
+            { echo 'NIX_CONFIG<<__NIX_CONFIG__'; printf '%s\n' "$conf"; echo '__NIX_CONFIG__'; } >> "$GITHUB_ENV"
           fi
 
       - uses: webfactory/ssh-agent@v0.10.0

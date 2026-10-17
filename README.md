@@ -75,7 +75,7 @@ jobs:
 | `visibility` | empty | `public`, `unlisted` or `private` publishes after all builds pass. Empty only populates the cache. |
 | `include-output-paths` | `true` | Publishes resolved store paths for `fh resolve` / `fh apply`. |
 | `enable-ssh-agent` + secret `ssh-private-key` | off | Private `git+ssh` inputs. |
-| secret `github-token` | none | Private `github:` inputs (`access-tokens`). |
+| secret `github-token` | none | Private GitHub inputs: `github:` via `access-tokens`, `git+ssh://git@github.com/...` rewritten to HTTPS with a masked header. |
 | `publish-runner` | `"ubuntu-latest"` | JSON `runs-on` for the publish job. |
 
 ### Consuming
