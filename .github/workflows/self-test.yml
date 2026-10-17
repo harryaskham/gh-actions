@@ -16,6 +16,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# The implicit `bash -e` shell has no pipefail, so `nix build | tee` could
+# mask a failed build. `shell: bash` runs steps with -eo pipefail.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     uses: ./.github/workflows/flakehub-build.yml

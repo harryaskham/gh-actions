@@ -93,6 +93,12 @@ on:
       flakeref_exact:
         value: ${{ jobs.publish.outputs.flakeref_exact }}
 
+# The implicit `bash -e` shell has no pipefail, so `nix build | tee` could
+# mask a failed build. `shell: bash` runs steps with -eo pipefail.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   build:
     name: build ${{ matrix.name }}
