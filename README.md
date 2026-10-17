@@ -78,6 +78,21 @@ jobs:
 | secret `github-token` | none | Private GitHub inputs: `github:` via `access-tokens`, `git+ssh://git@github.com/...` rewritten to HTTPS with a masked header. |
 | `publish-runner` | `"ubuntu-latest"` | JSON `runs-on` for the publish job. |
 
+### Concurrency on busy repositories
+
+Never cancel a running `main` build when pushes are frequent, or it may never
+finish. Cancel only superseded pull-request runs:
+
+```yaml
+concurrency:
+  group: flakehub-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+```
+
+Add `paths-ignore` for docs-only directories so they don't spend private-repo
+minutes. After the first successful build, unchanged packages substitute from
+FlakeHub Cache, so later runs are fast.
+
 ### Consuming
 
 - Inputs: `inputs.foo.url = "https://flakehub.com/f/harryaskham/foo/*";`
