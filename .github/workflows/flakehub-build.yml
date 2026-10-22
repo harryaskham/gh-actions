@@ -41,6 +41,15 @@ on:
           rebuilt and so never reach the post-build upload hook.
         type: boolean
         default: true
+      cache-push:
+        description: >-
+          How builds reach FlakeHub Cache. "action" (default) uses
+          flakehub-cache-action, which needs a trusted Nix user (GitHub-hosted
+          runners). "closure" pushes each build's closure with a standalone
+          daemon and needs no trust: use it on self-hosted Linux runners whose
+          user is not trusted. The publish job then skips the cache action too.
+        type: string
+        default: action
       isolate-home:
         description: >-
           Use a per-job HOME. Recommended on long-lived self-hosted runners so
@@ -166,6 +175,7 @@ jobs:
           echo "notify=$((50000 + h % 10000))" >> "$GITHUB_OUTPUT"
 
       - uses: DeterminateSystems/flakehub-cache-action@v3
+        if: ${{ inputs.cache-push == 'action' }}
         with:
           listen: ${{ steps.ports.outputs.listen }}
           startup-notification-port: ${{ steps.ports.outputs.notify }}
@@ -177,7 +187,7 @@ jobs:
           nix build -L --no-link --print-out-paths "$INSTALLABLE" | tee "$RUNNER_TEMP/out-paths"
 
       - name: Push closure to FlakeHub Cache
-        if: ${{ inputs.enqueue-closures }}
+        if: ${{ inputs.enqueue-closures && inputs.cache-push == 'action' }}
         env:
           LISTEN: ${{ steps.ports.outputs.listen }}
         run: |
@@ -189,6 +199,14 @@ jobs:
                 "http://$LISTEN/api/enqueue-paths"
           echo
           echo "Queued closure(s); the cache action's post step waits for the upload."
+
+      # Untrusted runners: push the closure explicitly and wait for it here.
+      - name: Push closure to FlakeHub Cache (untrusted runner)
+        if: ${{ inputs.cache-push == 'closure' }}
+        uses: harryaskham/gh-actions/.github/actions/flakehub-push-closure@main
+        with:
+          paths-file: ${{ runner.temp }}/out-paths
+          listen: ${{ steps.ports.outputs.listen }}
 
   publish:
     needs: build
@@ -242,6 +260,7 @@ jobs:
           ssh-private-key: ${{ secrets.ssh-private-key }}
 
       - uses: DeterminateSystems/flakehub-cache-action@v3
+        if: ${{ inputs.cache-push == 'action' }}
 
       - uses: DeterminateSystems/flakehub-push@v7
         id: push

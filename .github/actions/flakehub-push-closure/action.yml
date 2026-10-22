@@ -1,0 +1,35 @@
+name: Push closures to FlakeHub Cache (untrusted runner)
+description: >-
+  Push store paths, with their closures, to FlakeHub Cache from a job whose
+  runner user is not a trusted Nix user (self-hosted runners), where
+  DeterminateSystems/flakehub-cache-action refuses to start. Fetches the same
+  magic-nix-cache daemon into a throwaway store, authenticates with the job's
+  GitHub OIDC token and waits for the upload to finish. Linux only. The job
+  needs `permissions: id-token: write`.
+inputs:
+  paths-file:
+    description: File with one store path per line.
+    required: true
+  listen:
+    description: 127.0.0.1:PORT for the temporary daemon (unique per runner).
+    default: 127.0.0.1:37515
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        LISTEN: ${{ inputs.listen }}
+        PATHS_FILE: ${{ inputs.paths-file }}
+      run: |
+        set -euo pipefail
+        mapfile -t paths < <(sed '/^$/d' "$PATHS_FILE")
+        if [ "${#paths[@]}" -eq 0 ]; then echo "nothing to push"; exit 0; fi
+        script="$GITHUB_ACTION_PATH/push.sh"
+        if command -v curl >/dev/null && command -v xz >/dev/null; then
+          "$script" "${paths[@]}"
+        else
+          # curl and xz from the calling flake's own pinned nixpkgs input.
+          nix shell --impure --expr \
+            "(builtins.getFlake \"git+file://$GITHUB_WORKSPACE\").inputs.nixpkgs.legacyPackages.\${builtins.currentSystem}" \
+            curl xz -c "$script" "${paths[@]}"
+        fi
