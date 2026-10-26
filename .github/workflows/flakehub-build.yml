@@ -170,8 +170,17 @@ jobs:
       - name: Choose cache daemon ports
         id: ports
         run: |
+          # Below the kernel's ephemeral range (ip_local_port_range 32768-60999):
+          # in 40000-49999 an outgoing connection could hold the derived port
+          # and the daemon failed with "Address in use" (Collective, 2026-10-26).
+          # Step past any port that already has a listener.
           h=$(printf '%s' "$RUNNER_NAME" | cksum | cut -d' ' -f1)
-          echo "listen=127.0.0.1:$((40000 + h % 10000))" >> "$GITHUB_OUTPUT"
+          p=$((20000 + h % 10000))
+          for _ in $(seq 1 64); do
+            (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || break
+            p=$((20000 + (p - 20000 + 1) % 10000))
+          done
+          echo "listen=127.0.0.1:$p" >> "$GITHUB_OUTPUT"
           echo "notify=$((50000 + h % 10000))" >> "$GITHUB_OUTPUT"
 
       - uses: DeterminateSystems/flakehub-cache-action@v3
